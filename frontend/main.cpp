@@ -11,6 +11,7 @@ using namespace osuCrypto;
 #include "bitPosition.h"
 
 #include <numeric>
+#include <fstream>
 #include "Common/Log.h"
 //int miraclTestMain();
 
@@ -19,8 +20,9 @@ void usage(const char* argv0)
 {
 	std::cout << "Error! Please use:" << std::endl;
 	std::cout << "\t 1. For unit test: " << argv0 << " -u" << std::endl;
-	std::cout << "\t 2. For simulation (5 parties <=> 5 terminals): " << std::endl;;
-	std::cout << "\t\t each terminal: " << argv0 << " -n 5 -t 2 -m 12 -p [pIdx]" << std::endl;
+	std::cout << "\t 2. For simulation (3 parties <=> 3 machines): " << std::endl;;
+	std::cout << "\t\t each machine: " << argv0 << " -n 3 -r 1 -m 36000 -p [pIdx] -i <input csv file>" << std::endl;
+	std::cout << "\t\t The result table will be saved at data/result.csv at party 0." << std::endl;
 
 }
 int main(int argc, char** argv)
@@ -46,6 +48,7 @@ int main(int argc, char** argv)
 
 	u64 roundOPPRF;
 
+	std::string infilename;
 
 	switch (argc) {
 	case 2: //unit test
@@ -86,8 +89,8 @@ int main(int argc, char** argv)
 			return 0;
 		}
 		break;
-	case 9: //nPSI or optimized 3PSI
-		cout << "9\n";
+	case 11: //nPSI or optimized 3PSI
+		cout << "11\n";
 		if (argv[1][0] == '-' && argv[1][1] == 'n')
 			nParties = atoi(argv[2]);
 		else
@@ -113,7 +116,15 @@ int main(int argc, char** argv)
 		}
 
 		if (argv[5][0] == '-' && argv[5][1] == 'm')
-			setSize = 1 << atoi(argv[6]);
+			setSize = atoi(argv[6]);
+		else
+		{
+			usage(argv[0]);
+			return 0;
+		}
+
+		if (argv[9][0] == '-' && argv[9][1] == 'i')
+			infilename = std::string(argv[10]);
 		else
 		{
 			usage(argv[0]);
@@ -124,9 +135,10 @@ int main(int argc, char** argv)
 			u64 pIdx = atoi(argv[8]);
 			if (roundOPPRF == 1 && nParties == 3)
 			{
-				//cout << nParties  << " " << roundOPPRF << " " << setSize << " " << pIdx << "\n";
-				party3(pIdx, setSize, trials);
-
+				cout << nParties  << " " << roundOPPRF << " " << setSize << " " << pIdx << "\n";
+				std::ifstream infile(infilename);
+				party3(pIdx, setSize, trials, infile);
+				infile.close();
 			}
 			else if (argv[3][1] == 't')
 			{
@@ -143,6 +155,7 @@ int main(int argc, char** argv)
 			usage(argv[0]);
 			return 0;
 		}
+
 		break;
 	}
 

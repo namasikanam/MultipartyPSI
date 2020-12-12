@@ -3,7 +3,6 @@
 #include "OPPRF/OPPRFReceiver.h"
 #include "OPPRF/OPPRFSender.h"
 
-#include <fstream>
 using namespace osuCrypto;
 #include "util.h"
 
@@ -19,6 +18,7 @@ using namespace osuCrypto;
 #include "Crypto/PRNG.h"
 #include <numeric>
 #include <iostream>
+#include <fstream>
 //#define OOS
 //#define PRINT
 #define pows  { 16/*8,12,,20*/ }
@@ -655,7 +655,7 @@ void party(u64 myIdx, u64 nParties, u64 setSize, std::vector<block>& mSet)
 	ios.stop();
 }
 
-void party3(u64 myIdx, u64 setSize, u64 nTrials)
+void party3(u64 myIdx, u64 setSize, u64 nTrials, std::ifstream &infile)
 {
 	std::fstream runtime;
 	if (myIdx == 0)
@@ -691,7 +691,6 @@ void party3(u64 myIdx, u64 setSize, u64 nTrials)
 		}
 	}
 
-
 	std::vector<std::vector<Channel*>> chls(nParties);
 
 	for (u64 i = 0; i < nParties; ++i)
@@ -706,28 +705,53 @@ void party3(u64 myIdx, u64 setSize, u64 nTrials)
 		}
 	}
 
-	PRNG prngSame(_mm_set_epi32(4253465, 3434565, 234435, 23987045));
-	PRNG prngDiff(_mm_set_epi32(434653, 23, myIdx, myIdx));
 	u64 expected_intersection;
 	u64 num_intersection;
 	double dataSent = 0, Mbps = 0, dateRecv = 0, MbpsRecv = 0;
+	char col_names[10][30]; // assume that the number of columns of data is no more than 10
 
 	for (u64 idxTrial = 0; idxTrial < nTrials; idxTrial++)
 	{
+		std::vector<std::vector<u64>> sheet(setSize);
 		std::vector<block> set(setSize);
+		std::vector<u64> ids(setSize);
 
-		block blk_rand = prngSame.get<block>();
-		expected_intersection = (*(u64*)&blk_rand) % setSize;
+		{ // read csv
+			std::string line;
+			std::vector<std::string> names = split(line, ",");
+			u64 j;
 
-		for (u64 i = 0; i < expected_intersection; ++i)
-		{
-			set[i] = prngSame.get<block>();
+			std::getline(infile, line);
+			while (!isalpha(line[line.size() - 1])) // strip white characters at the end of the line
+        		line = line.substr(0, line.size() - 1);
+			j = 0;
+			for (std::string name: split(line, ","))
+			{
+				strcpy(col_names[j], name.c_str());
+				++j;
+			}
+			
+			for (u64 i = 0; i < setSize; ++i)
+			{
+				std::getline(infile, line);
+				j = 0;
+				for (std::string number: split(line, ","))
+				{
+					u64 num = std::stoull(number);
+					sheet[i].push_back(num);
+					if (strcmp(col_names[j], "ID") == 0) {
+						set[i] = toBlock(num);
+						ids[i] = num;
+					}
+					++j;
+				}
+			}
 		}
 
-		for (u64 i = expected_intersection; i < setSize; ++i)
-		{
-			set[i] = prngDiff.get<block>();
-		}
+		std::cout << "set:\n";
+		for (u64 i = 0; i < 10; ++i)
+			std::cout << "\t" << i << ": " << set[i] << "\n";
+		std::cout << "+++++++++++++\n";
 
 		std::vector<block> sendPayLoads(setSize);
 		std::vector<block> recvPayLoads(setSize);
@@ -767,7 +791,6 @@ void party3(u64 myIdx, u64 setSize, u64 nTrials)
 				if (pIdx == nextNeibough) {
 					//I am a sender to my next neigbour
 					send.init(opt, nParties, setSize, psiSecParam, bitSize, chls[pIdx], otCountSend, otSend[pIdx], otRecv[pIdx], prng.get<block>(), false);
-
 				}
 				else if (pIdx == prevNeibough) {
 					//I am a recv to my previous neigbour
@@ -826,7 +849,6 @@ void party3(u64 myIdx, u64 setSize, u64 nTrials)
 		for (u64 pIdx = 0; pIdx < pThrds.size(); ++pIdx)
 		{
 			pThrds[pIdx] = std::thread([&, pIdx]() {
-
 				if (pIdx == nextNeibough) {
 					//I am a sender to my next neigbour
 					send.getOPRFkeys(pIdx, bins, chls[pIdx], false);
@@ -834,7 +856,6 @@ void party3(u64 myIdx, u64 setSize, u64 nTrials)
 				else if (pIdx == prevNeibough) {
 					//I am a recv to my previous neigbour
 					recv.getOPRFkeys(pIdx, bins, chls[pIdx], false);
-
 				}
 			});
 		}
@@ -896,7 +917,6 @@ void party3(u64 myIdx, u64 setSize, u64 nTrials)
 			recv.recvSSTableBased(prevNeibough, bins, recvPayLoads, chls[prevNeibough]);
 			//sendPayLoads = recvPayLoads;
 			send.sendSSTableBased(nextNeibough, bins, recvPayLoads, chls[nextNeibough]);
-
 		}
 
 		/*for (u64 pIdx = 0; pIdx < pThrds.size(); ++pIdx)
@@ -939,9 +959,7 @@ void party3(u64 myIdx, u64 setSize, u64 nTrials)
 
 		std::vector<u64> mIntersection;
 
-		if (myIdx == 0) {
-
-			
+		if (myIdx == 0) {			
 			for (u64 i = 0; i < setSize; ++i)
 			{
 				if (!memcmp((u8*)&sendPayLoads[i], &recvPayLoads[i], bins.mMaskSize))
@@ -950,6 +968,17 @@ void party3(u64 myIdx, u64 setSize, u64 nTrials)
 				}
 			}
 			Log::out << "mIntersection.size(): " << mIntersection.size() << Log::endl;
+			// for (u64 i = 0; i < mIntersection.size(); ++i)
+			// {
+			// 	Log::out << "\t" << mIntersection[i] << ": " << set[mIntersection[i]] << "\n";
+			// }
+
+			// save to file
+			std::ofstream outfile("data/result.csv");
+			outfile << "ID\n";
+			for (u64 id: mIntersection)
+				outfile << ids[id] << "\n";
+			outfile.close();
 		}
 		auto getIntersection = timer.setTimePoint("getIntersection");
 
@@ -1304,7 +1333,7 @@ void party2(u64 myIdx, u64 setSize)
 		{
 			if (!memcmp((u8*)&sendPayLoads[i], &recvPayLoads[i], maskSize))
 			{
-				//	mIntersection.push_back(i);
+				mIntersection.push_back(i);
 			}
 		}
 		Log::out << "mIntersection.size(): " << mIntersection.size() << Log::endl;
@@ -2883,23 +2912,21 @@ void OPPRFn_EmptrySet_Test_Main()
 
 }
 
-void OPPRF3_EmptrySet_Test_Main()
-{
-	u64 setSize = 1 << 5, psiSecParam = 40, bitSize = 128;
-	nParties = 3;
-	std::vector<std::thread>  pThrds(nParties);
-	for (u64 pIdx = 0; pIdx < pThrds.size(); ++pIdx)
-	{
-		pThrds[pIdx] = std::thread([&, pIdx]() {
-			//	Channel_party_test(pIdx);
-			party3(pIdx, setSize, 1);
-		});
-	}
-	for (u64 pIdx = 0; pIdx < pThrds.size(); ++pIdx)
-		pThrds[pIdx].join();
-
-
-}
+// void OPPRF3_EmptrySet_Test_Main()
+// {
+// 	u64 setSize = 1 << 5, psiSecParam = 40, bitSize = 128;
+// 	nParties = 3;
+// 	std::vector<std::thread>  pThrds(nParties);
+// 	for (u64 pIdx = 0; pIdx < pThrds.size(); ++pIdx)
+// 	{
+// 		pThrds[pIdx] = std::thread([&, pIdx]() {
+// 			//	Channel_party_test(pIdx);
+// 			party3(pIdx, setSize, 1);
+// 		});
+// 	}
+// 	for (u64 pIdx = 0; pIdx < pThrds.size(); ++pIdx)
+// 		pThrds[pIdx].join();
+// }
 
 void OPPRF2_EmptrySet_Test_Main()
 {
