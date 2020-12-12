@@ -708,50 +708,74 @@ void party3(u64 myIdx, u64 setSize, u64 nTrials, std::ifstream &infile)
 	u64 expected_intersection;
 	u64 num_intersection;
 	double dataSent = 0, Mbps = 0, dateRecv = 0, MbpsRecv = 0;
-	char col_names[10][30]; // assume that the number of columns of data is no more than 10
 
 	for (u64 idxTrial = 0; idxTrial < nTrials; idxTrial++)
 	{
-		std::vector<std::vector<u64>> sheet(setSize);
-		std::vector<block> set(setSize);
-		std::vector<u64> ids(setSize);
+		std::vector<std::vector<u64>> sheet(setSize); // id will be moved to the 0-th column in the sheet
+		std::vector<block> set(setSize); // the set of id to calculate intersection
+		std::vector<std::string> col_names; // the name of columns of the shrunk sheet
 
 		{ // read csv
 			std::string line;
 			std::vector<std::string> names = split(line, ",");
-			u64 j;
+			std::vector<u8> col_flag; // 0 means to discard, 1 means to save, 2 means id
 
 			std::getline(infile, line);
 			while (!isalpha(line[line.size() - 1])) // strip white characters at the end of the line
         		line = line.substr(0, line.size() - 1);
-			j = 0;
-			for (std::string name: split(line, ","))
 			{
-				strcpy(col_names[j], name.c_str());
-				++j;
+				u64 j = 0;
+				col_names.push_back("ID");
+				for (std::string name: split(line, ","))
+				{
+					if (name == "ID") col_flag.push_back(2);
+					else
+					{
+						if (myIdx == 0 && (name == "BILL_AMT1" || name == "LIMIT_BAL")
+							|| myIdx == 1 && name == "BILL_AMT3"
+							|| myIdx == 2 && name == "BILL_AMT5")
+						{
+							col_flag.push_back(1);
+							col_names.push_back(name);
+						}
+						else
+						{
+							col_flag.push_back(0);
+						}
+					}
+					++j;
+				}
 			}
 			
 			for (u64 i = 0; i < setSize; ++i)
 			{
 				std::getline(infile, line);
-				j = 0;
+				u64 j = 0;
 				for (std::string number: split(line, ","))
 				{
 					u64 num = std::stoull(number);
-					sheet[i].push_back(num);
-					if (strcmp(col_names[j], "ID") == 0) {
+					if (col_flag[j] == 2)
+					{
 						set[i] = toBlock(num);
-						ids[i] = num;
+						sheet[i].insert(sheet[i].begin(), num);
+					}
+					else if (col_flag[j] == 1)
+					{
+						sheet[i].push_back(num);
 					}
 					++j;
 				}
 			}
+			
+			std::sort(sheet.begin(), sheet.end());
+			for (u64 i = 0; i < setSize; ++i)
+				set[i] = toBlock(sheet[i][0]);
 		}
 
-		std::cout << "set:\n";
-		for (u64 i = 0; i < 10; ++i)
-			std::cout << "\t" << i << ": " << set[i] << "\n";
-		std::cout << "+++++++++++++\n";
+		// std::cout << "set (first 10 elements):\n";
+		// for (u64 i = 0; i < 10; ++i)
+		// 	std::cout << "\t" << i << ": " << set[i] << "\n";
+		// std::cout << "+++++++++++++\n";
 
 		std::vector<block> sendPayLoads(setSize);
 		std::vector<block> recvPayLoads(setSize);
@@ -968,22 +992,86 @@ void party3(u64 myIdx, u64 setSize, u64 nTrials, std::ifstream &infile)
 				}
 			}
 			Log::out << "mIntersection.size(): " << mIntersection.size() << Log::endl;
-			// for (u64 i = 0; i < mIntersection.size(); ++i)
-			// {
-			// 	Log::out << "\t" << mIntersection[i] << ": " << set[mIntersection[i]] << "\n";
-			// }
-
-			// save to file
-			std::ofstream outfile("data/result.csv");
-			outfile << "ID\n";
-			for (u64 id: mIntersection)
-				outfile << ids[id] << "\n";
-			outfile.close();
 		}
 		auto getIntersection = timer.setTimePoint("getIntersection");
 
-		num_intersection = mIntersection.size();
+		// p0 sends `num_intersection` to P1 and P2
+		if (myIdx == 0)
+		{
+			num_intersection = mIntersection.size();
+			chls[1][0]->send(&num_intersection, 8);
+			chls[2][0]->send(&num_intersection, 8);
+		}
+		else
+		{
+			chls[0][0]->recv(&num_intersection, 8);
+		}
 
+		Log::out << "num_intersection = " << num_intersection << "\n";
+
+		// p0 sends the set of ids to p1 and p2
+		// assume that id falls in [0, 2^32)
+		unsigned *ids = (unsigned *)malloc(num_intersection * sizeof(unsigned));
+		if (myIdx == 0)
+		{
+			for (u64 i = 0; i < num_intersection; ++i)
+				ids[i] = sheet[i][0];
+			chls[1][0]->asyncSend(ids, num_intersection * sizeof(unsigned));
+			chls[2][0]->asyncSend(ids, num_intersection * sizeof(unsigned));
+		}
+		else
+		{
+			std::future<void> fut = chls[0][0]->asyncRecv(ids, num_intersection * sizeof(unsigned));
+			fut.get();
+		}
+
+		// p1 sends the column of BILL_AMT3 to p0
+		// p2 sends the column of BILL_AMT5 to p0
+		// assume that all data falls in [0, 2^32)
+		if (myIdx == 0)
+		{
+			unsigned *bill_amt3 = (unsigned *)malloc(num_intersection * sizeof(unsigned));
+			unsigned *bill_amt5 = (unsigned *)malloc(num_intersection * sizeof(unsigned));
+			chls[1][0]->recv(bill_amt3, num_intersection * sizeof(unsigned));
+			chls[2][0]->recv(bill_amt5, num_intersection * sizeof(unsigned));
+
+			std::ofstream outfile("data/result.csv");
+			outfile << "ID,RESULT\n";
+			for (u64 i = 0; i < num_intersection; ++i) {
+				outfile << ids[i] << ",";
+				double result = bill_amt3[i] + bill_amt5[i];
+				result += sheet[i][find(col_names.begin(), col_names.end(), "BILL_AMT1") - col_names.begin()];
+				result /= sheet[i][find(col_names.begin(), col_names.end(), "LIMIT_BAL") - col_names.begin()];
+				outfile << result << "\n";
+			}
+			outfile.close();
+
+			free(ids);
+			free(bill_amt3);
+			free(bill_amt5);
+		}
+		else if (myIdx == 1)
+		{
+			unsigned *bill_amt3 = (unsigned *)malloc(num_intersection * sizeof(unsigned));
+			for (u64 i = 0, j = 0; i < num_intersection; ++i, ++j)
+			{
+				while (sheet[j][0] != ids[i]) ++j;
+				bill_amt3[i] = sheet[j][1];
+			}
+			chls[0][0]->send(bill_amt3, num_intersection * sizeof(unsigned));
+			free(bill_amt3);
+		}
+		else if (myIdx == 2)
+		{
+			unsigned *bill_amt5 = (unsigned *)malloc(num_intersection * sizeof(unsigned));
+			for (u64 i = 0, j = 0; i < num_intersection; ++i, ++j)
+			{
+				while (sheet[j][0] != ids[i]) ++j;
+				bill_amt5[i] = sheet[j][1];
+			}
+			chls[0][0]->send(bill_amt5, num_intersection * sizeof(unsigned));
+			free(bill_amt5);
+		}
 
 		if (myIdx == 0) {
 			auto offlineTime = std::chrono::duration_cast<std::chrono::milliseconds>(initDone - start).count();
